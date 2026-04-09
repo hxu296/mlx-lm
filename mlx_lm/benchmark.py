@@ -73,7 +73,63 @@ def setup_arg_parser():
         default=0,
         help="Delay between each test in seconds (default: 0)",
     )
+    parser.add_argument(
+        "--prompt-text",
+        type=str,
+        default=None,
+        help="Optional prompt text to tokenize instead of using random token ids.",
+    )
+    parser.add_argument(
+        "--use-block-cache",
+        action="store_true",
+        help="Enable model-specific block cache when supported.",
+    )
+    parser.add_argument(
+        "--block-size",
+        type=int,
+        default=32,
+        help="Block size for models with custom generation.",
+    )
+    parser.add_argument(
+        "--small-block-size",
+        type=int,
+        default=8,
+        help="Sub-block size for models with custom generation.",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=1.0,
+        help="Confidence threshold for models with custom generation.",
+    )
+    parser.add_argument(
+        "--mask-id",
+        type=int,
+        default=None,
+        help="Optional mask token id override for models with custom generation.",
+    )
+    parser.add_argument(
+        "--min-unmasks-per-step",
+        type=int,
+        default=1,
+        help="Minimum masked tokens to accept per refinement step for custom generation.",
+    )
     return parser
+
+
+def _build_prompts(tokenizer, prompt_text, prompt_tokens, batch_size, vocab_size):
+    if prompt_text is None:
+        prompts = mx.random.randint(0, vocab_size, (batch_size, prompt_tokens)).tolist()
+        return prompts, False
+
+    tokens = tokenizer.encode(prompt_text, add_special_tokens=False)
+    if len(tokens) == 0:
+        raise ValueError("--prompt-text must produce at least one token.")
+    if prompt_tokens > 0:
+        repeats = (prompt_tokens + len(tokens) - 1) // len(tokens)
+        tokens = (tokens * repeats)[:prompt_tokens]
+    prompts = [list(tokens) for _ in range(batch_size)]
+    return prompts, True
 
 
 def main():
@@ -111,8 +167,22 @@ def main():
     generation_tokens = args.generation_tokens
     batch_size = args.batch_size
     vocab_size = config.get("vocab_size") or config["text_config"]["vocab_size"]
-    prompts = mx.random.randint(0, vocab_size, (batch_size, prompt_tokens)).tolist()
+    prompts, using_text_prompt = _build_prompts(
+        tokenizer, args.prompt_text, prompt_tokens, batch_size, vocab_size
+    )
     prompt = prompts[0]
+
+    if batch_size > 1 and (
+        args.use_block_cache
+        or args.block_size != 32
+        or args.small_block_size != 8
+        or args.threshold != 1.0
+        or args.mask_id is not None
+        or args.min_unmasks_per_step != 1
+    ):
+        raise ValueError(
+            "Fast-dLLM generation options are only supported with batch_size=1."
+        )
 
     def single_bench():
         for response in stream_generate(
@@ -121,6 +191,12 @@ def main():
             prompt,
             max_tokens=generation_tokens,
             prefill_step_size=args.prefill_step_size,
+            use_block_cache=args.use_block_cache,
+            block_size=args.block_size,
+            small_block_size=args.small_block_size,
+            threshold=args.threshold,
+            mask_id=args.mask_id,
+            min_unmasks_per_step=args.min_unmasks_per_step,
         ):
             pass
         return response
@@ -139,21 +215,69 @@ def main():
     else:
         _bench = batch_bench
 
+    use_custom_generation_timing = batch_size == 1 and hasattr(
+        model, "custom_generate_step"
+    )
+
+    def measure_custom_prompt_time():
+        prompt_array = mx.array(prompt, dtype=mx.uint32)
+        if prompt_array.shape[0] <= args.block_size:
+            return 0.0
+
+        full_prefix_len = (prompt_array.shape[0] // args.block_size) * args.block_size
+        prefix = prompt_array[None, :full_prefix_len]
+        cache = model.make_cache()
+
+        tic = time.perf_counter()
+        logits = model(
+            prefix,
+            cache=cache,
+            block_size=args.block_size,
+            update_past_key_values=True,
+        )
+        mx.eval(logits)
+        return time.perf_counter() - tic
+
     rprint("Running warmup..")
     _bench()
 
-    report_keys = ["prompt_tps", "generation_tps", "peak_memory"]
+    if use_custom_generation_timing:
+        rprint(
+            "Using wall-clock generation timing for custom model generation."
+        )
+        if not using_text_prompt:
+            rprint(
+                "Random-token prompts are pessimistic for confidence-thresholded decoding."
+                " Use --prompt-text for a more representative Fast-dLLM benchmark."
+            )
+        report_keys = ["prompt_tps", "peak_memory"]
+    else:
+        report_keys = ["prompt_tps", "generation_tps", "peak_memory"]
     rprint(f"Timing with {prompt_tokens=}, {generation_tokens=}, {batch_size=}.")
     responses = []
+    total_times = []
     for i in range(args.num_trials):
         if args.delay > 0:
             time.sleep(args.delay)
+        prompt_time = measure_custom_prompt_time() if use_custom_generation_timing else None
         tic = time.perf_counter()
         response = _bench()
         toc = time.perf_counter()
+        if use_custom_generation_timing:
+            generation_time = max(toc - tic - prompt_time, 1e-9)
+            response.prompt_tps = (
+                response.prompt_tokens / prompt_time if prompt_time > 0 else float("inf")
+            )
+        else:
+            generation_time = None
         responses.append(response)
+        total_times.append((toc - tic, generation_time))
         results = [(k, getattr(response, k)) for k in report_keys]
         results = [f"{k}={v:.3f}" for k, v in results]
+        if use_custom_generation_timing:
+            results.append(
+                f"generation_tps_wall={response.generation_tokens / generation_time:.3f}"
+            )
         results.append(f"total_time={toc - tic:.3f}")
         rprint(f"Trial {i+1}:  " + ", ".join(results))
 
@@ -163,6 +287,17 @@ def main():
 
     results = [(k, avg(k)) for k in report_keys]
     results = [f"{k}={v:.3f}" for k, v in results]
+    if use_custom_generation_timing:
+        avg_generation_time = max(
+            sum(generation_time for _, generation_time in total_times) / args.num_trials,
+            1e-9,
+        )
+        avg_generation_tokens = (
+            sum(r.generation_tokens for r in responses) / args.num_trials
+        )
+        results.append(
+            f"generation_tps_wall={avg_generation_tokens / avg_generation_time:.3f}"
+        )
     rprint(f"Averages: " + ", ".join(results))
 
 

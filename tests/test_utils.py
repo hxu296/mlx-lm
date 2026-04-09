@@ -3,6 +3,7 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -122,6 +123,35 @@ class TestUtils(unittest.TestCase):
         self.assertTrue(hasattr(model, "custom_attribute"))
         self.assertEqual(model.custom_attribute, "This is a custom model")
         self.assertTrue(hasattr(model, "qwenWeights"))
+
+    def test_fast_dllm_qwen_remap_and_load_model(self):
+        from mlx_lm.models.fast_dllm_qwen import Model as FastDLLMModel
+
+        model_path = Path(self.test_dir) / "fast_dllm_qwen"
+        model_path.mkdir()
+        (model_path / "config.json").write_text(
+            """
+            {
+                "model_type": "Fast_dLLM_Qwen",
+                "hidden_size": 64,
+                "num_hidden_layers": 2,
+                "intermediate_size": 128,
+                "num_attention_heads": 8,
+                "rms_norm_eps": 1e-6,
+                "vocab_size": 256,
+                "num_key_value_heads": 2,
+                "max_position_embeddings": 1024,
+                "rope_theta": 1000000.0,
+                "tie_word_embeddings": false
+            }
+            """
+        )
+
+        model, config = utils.load_model(model_path, strict=False)
+
+        self.assertIsInstance(model, FastDLLMModel)
+        self.assertEqual(model.model_type, "Fast_dLLM_Qwen")
+        self.assertEqual(config["model_type"], "Fast_dLLM_Qwen")
 
 
 if __name__ == "__main__":

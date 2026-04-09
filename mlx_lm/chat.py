@@ -84,6 +84,41 @@ def setup_arg_parser():
         action="store_true",
         help="Use pipelining instead of tensor parallelism",
     )
+    parser.add_argument(
+        "--use-block-cache",
+        action="store_true",
+        help="Enable model-specific block cache when supported.",
+    )
+    parser.add_argument(
+        "--block-size",
+        type=int,
+        default=32,
+        help="Block size for models with custom generation.",
+    )
+    parser.add_argument(
+        "--small-block-size",
+        type=int,
+        default=8,
+        help="Sub-block size for models with custom generation.",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=1.0,
+        help="Confidence threshold for models with custom generation.",
+    )
+    parser.add_argument(
+        "--mask-id",
+        type=int,
+        default=None,
+        help="Optional mask token id override for models with custom generation.",
+    )
+    parser.add_argument(
+        "--min-unmasks-per-step",
+        type=int,
+        default=1,
+        help="Minimum masked tokens to accept per refinement step for custom generation.",
+    )
     return parser
 
 
@@ -123,13 +158,18 @@ def main():
 
     rprint(f"[INFO] Starting chat session with {args.model}.")
     print_help()
-    prompt_cache = make_prompt_cache(model, args.max_kv_size)
+    use_prompt_cache = not hasattr(model, "custom_generate_step")
+    prompt_cache = (
+        make_prompt_cache(model, args.max_kv_size) if use_prompt_cache else None
+    )
     while True:
         query = input(">> " if rank == 0 else "")
         if query == "q":
             break
         if query == "r":
-            prompt_cache = make_prompt_cache(model, args.max_kv_size)
+            prompt_cache = (
+                make_prompt_cache(model, args.max_kv_size) if use_prompt_cache else None
+            )
             continue
         if query == "h":
             print_help()
@@ -157,6 +197,12 @@ def main():
                 ),
             ),
             prompt_cache=prompt_cache,
+            use_block_cache=args.use_block_cache,
+            block_size=args.block_size,
+            small_block_size=args.small_block_size,
+            threshold=args.threshold,
+            mask_id=args.mask_id,
+            min_unmasks_per_step=args.min_unmasks_per_step,
         ):
             rprint(response.text, flush=True, end="")
         rprint()

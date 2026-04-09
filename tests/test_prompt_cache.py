@@ -11,8 +11,10 @@ from mlx_lm.generate import generate_step
 from mlx_lm.models.base import create_attention_mask, create_causal_mask
 from mlx_lm.models.cache import (
     ArraysCache,
+    BatchBlockKVCache,
     BatchKVCache,
     BatchRotatingKVCache,
+    BlockKVCache,
     CacheList,
     ChunkedKVCache,
     KVCache,
@@ -529,6 +531,97 @@ class TestPromptCache(unittest.TestCase):
         self.assertEqual(cache_a.values.shape[0], 5)
         self.assertEqual(cache_a.offset.tolist(), [6, 7, 6, 1, 4])
         self.assertEqual(cache_a.left_padding.tolist(), [2, 1, 2, 7, 4])
+
+    def test_batch_block_kv_cache(self):
+        cache = BatchBlockKVCache(left_padding=[2, 0])
+        k, v = mx.zeros((2, 1, 4, 8)), mx.zeros((2, 1, 4, 8))
+        k, v = cache.update_and_fetch(k, v)
+        self.assertEqual(k.shape, (2, 1, 4, 8))
+        self.assertEqual(cache.offset.tolist(), [2, 4])
+
+        patch = mx.ones((2, 1, 1, 8))
+        cache.update_slice(patch, patch, 1)
+
+        self.assertTrue(mx.array_equal(cache.keys[0, :, :2, :], mx.zeros((1, 2, 8))))
+        self.assertTrue(mx.array_equal(cache.keys[0, :, 3:4, :], patch[0]))
+        self.assertTrue(mx.array_equal(cache.keys[1, :, 1:2, :], patch[1]))
+        self.assertTrue(mx.array_equal(cache.values[1, :, 1:2, :], patch[1]))
+
+        cache.filter([0])
+        self.assertEqual(cache.keys.shape, (1, 1, 2, 8))
+        self.assertEqual(cache.left_padding.tolist(), [0])
+        self.assertEqual(cache.offset.tolist(), [2])
+
+        cache_a = BatchBlockKVCache(left_padding=[2, 1, 2])
+        cache_b = BatchBlockKVCache(left_padding=[3, 0])
+        k = mx.zeros((3, 1, 8, 1))
+        v = mx.zeros((3, 1, 8, 1))
+        cache_a.update_and_fetch(k, v)
+        k = mx.zeros((2, 1, 4, 1))
+        v = mx.zeros((2, 1, 4, 1))
+        cache_b.update_and_fetch(k, v)
+
+        cache_a.extend(cache_b)
+        self.assertEqual(cache_a.keys.shape[0], 5)
+        self.assertEqual(cache_a.values.shape[0], 5)
+        self.assertEqual(cache_a.offset.tolist(), [6, 7, 6, 1, 4])
+        self.assertEqual(cache_a.left_padding.tolist(), [2, 1, 2, 7, 4])
+
+    def test_block_kv_cache_merge_extract(self):
+        c1 = BlockKVCache()
+        c2 = BlockKVCache()
+        k1 = mx.random.normal(shape=(1, 2, 5, 4))
+        v1 = mx.random.normal(shape=(1, 2, 5, 4))
+        k2 = mx.random.normal(shape=(1, 2, 7, 4))
+        v2 = mx.random.normal(shape=(1, 2, 7, 4))
+        c1.update_and_fetch(k1, v1)
+        c2.update_and_fetch(k2, v2)
+
+        merged = BlockKVCache.merge((c1, c2))
+        self.assertIsInstance(merged, BatchBlockKVCache)
+        self.assertEqual(merged.keys.shape, (2, 2, 7, 4))
+        self.assertEqual(merged.left_padding.tolist(), [2, 0])
+        self.assertEqual(merged.offset.tolist(), [5, 7])
+
+        c1_ex = merged.extract(0)
+        c2_ex = merged.extract(1)
+        self.assertTrue(mx.array_equal(c1_ex.state[0], c1.state[0]))
+        self.assertTrue(mx.array_equal(c1_ex.state[1], c1.state[1]))
+        self.assertTrue(mx.array_equal(c2_ex.state[0], c2.state[0]))
+        self.assertTrue(mx.array_equal(c2_ex.state[1], c2.state[1]))
+
+    def test_save_load_block_kv_cache(self):
+        cache_file = os.path.join(self.test_dir, "block_prompt_cache.safetensors")
+
+        cache = [
+            BlockKVCache(),
+            BatchBlockKVCache(left_padding=[1, 0]),
+            CacheList(KVCache(), BlockKVCache()),
+        ]
+        x = mx.random.uniform(shape=(1, 4, 7, 4))
+        cache[0].update_and_fetch(x, x)
+        y = mx.random.uniform(shape=(2, 4, 6, 4))
+        cache[1].update_and_fetch(y, y)
+        cache[2][0].update_and_fetch(x, x)
+        cache[2][1].update_and_fetch(x[..., :4, :], x[..., :4, :])
+
+        save_prompt_cache(cache_file, cache)
+        loaded_cache = load_prompt_cache(cache_file)
+
+        self.assertTrue(mx.array_equal(cache[0].state[0], loaded_cache[0].state[0]))
+        self.assertTrue(mx.array_equal(cache[0].state[1], loaded_cache[0].state[1]))
+        self.assertTrue(mx.array_equal(cache[1].state[0], loaded_cache[1].state[0]))
+        self.assertTrue(mx.array_equal(cache[1].state[1], loaded_cache[1].state[1]))
+        self.assertEqual(cache[1].offset.tolist(), loaded_cache[1].offset.tolist())
+        self.assertEqual(
+            cache[1].left_padding.tolist(), loaded_cache[1].left_padding.tolist()
+        )
+        self.assertTrue(
+            mx.array_equal(cache[2][0].state[0], loaded_cache[2][0].state[0])
+        )
+        self.assertTrue(
+            mx.array_equal(cache[2][1].state[0], loaded_cache[2][1].state[0])
+        )
 
     def test_batch_rotating_kv_cache(self):
         cache = BatchRotatingKVCache(max_size=4, left_padding=[2, 0])

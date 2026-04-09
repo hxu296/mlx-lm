@@ -43,6 +43,7 @@ from .tokenizer_utils import load as _load_tokenizer
 
 # Constants
 MODEL_REMAPPING = {
+    "Fast_dLLM_Qwen": "fast_dllm_qwen",
     "mistral": "llama",
     "llava": "mistral3",
     "phi-msft": "phixtral",

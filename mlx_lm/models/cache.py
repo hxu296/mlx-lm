@@ -407,6 +407,80 @@ class KVCache(_BaseCache):
         return self.keys.nbytes + self.values.nbytes
 
 
+class BlockKVCache(_BaseCache):
+    def __init__(self):
+        self.keys = None
+        self.values = None
+        self.offset = 0
+
+    def update_and_fetch(self, keys, values):
+        self.keys = keys
+        self.values = values
+        self.offset = keys.shape[2]
+        return self.keys, self.values
+
+    def update_slice(self, keys, values, position: int):
+        if self.keys is None:
+            raise ValueError("Cannot update an empty BlockKVCache.")
+        end = position + keys.shape[2]
+        if end > self.offset:
+            raise ValueError("BlockKVCache update exceeds the cached sequence length.")
+        self.keys[..., position:end, :] = keys
+        self.values[..., position:end, :] = values
+        return self.keys, self.values
+
+    def clear(self):
+        self.keys = None
+        self.values = None
+        self.offset = 0
+
+    def size(self):
+        return self.offset
+
+    @property
+    def state(self):
+        return self.keys, self.values
+
+    @state.setter
+    def state(self, v):
+        self.keys, self.values = v
+        if self.keys is not None and self.keys.size == 0:
+            self.keys = None
+            self.values = None
+            self.offset = 0
+        else:
+            self.offset = 0 if self.keys is None else self.keys.shape[2]
+
+    @property
+    def meta_state(self):
+        return (str(self.offset),)
+
+    @meta_state.setter
+    def meta_state(self, v):
+        self.offset = int(v[0])
+
+    def is_trimmable(self):
+        return self.empty()
+
+    def trim(self, n):
+        if not self.empty():
+            raise ValueError("Cannot trim a non-empty BlockKVCache.")
+        return n
+
+    @classmethod
+    def merge(_, caches):
+        return BatchBlockKVCache.merge(caches)
+
+    def empty(self):
+        return self.keys is None or self.offset == 0
+
+    @property
+    def nbytes(self):
+        if self.keys is None:
+            return 0
+        return self.keys.nbytes + self.values.nbytes
+
+
 class RotatingKVCache(_BaseCache):
     step = 256
 
@@ -1095,6 +1169,147 @@ class BatchKVCache(_BaseCache):
         if self.keys is None:
             return 0
         return self.keys.nbytes + self.values.nbytes
+
+
+class BatchBlockKVCache(BatchKVCache):
+    def __init__(self, left_padding: List[int]):
+        self.keys = None
+        self.values = None
+        self.left_padding = mx.array(left_padding)
+        self.offset = mx.zeros(len(left_padding), dtype=self.left_padding.dtype)
+        self._idx = 0
+        self._right_padding = None
+
+    def update_and_fetch(self, keys, values):
+        self.keys = keys
+        self.values = values
+        self._idx = keys.shape[2]
+        self.offset = mx.full(
+            (keys.shape[0],), self._idx, dtype=self.left_padding.dtype
+        ) - self.left_padding
+        self.keys = mx.depends(self.keys, (self.left_padding, self.offset))
+        return self.keys, self.values
+
+    def update_slice(self, keys, values, position):
+        if self.keys is None:
+            raise ValueError("Cannot update an empty BatchBlockKVCache.")
+
+        if isinstance(position, int):
+            starts = [position] * self.keys.shape[0]
+        else:
+            starts = mx.array(position).tolist()
+
+        left_padding = self.left_padding.tolist()
+        for i, (start, pad) in enumerate(zip(starts, left_padding)):
+            start += pad
+            end = start + keys.shape[2]
+            if end > self._idx:
+                raise ValueError(
+                    "BatchBlockKVCache update exceeds the cached sequence length."
+                )
+            self.keys[i : i + 1, ..., start:end, :] = keys[i : i + 1]
+            self.values[i : i + 1, ..., start:end, :] = values[i : i + 1]
+
+        return self.keys[..., : self._idx, :], self.values[..., : self._idx, :]
+
+    def clear(self):
+        self.keys = None
+        self.values = None
+        self.offset = mx.zeros(len(self.left_padding), dtype=self.left_padding.dtype)
+        self._idx = 0
+        self._right_padding = None
+
+    def prepare(self, *, left_padding=None, lengths=None, right_padding=None):
+        if left_padding is not None:
+            if self.keys is not None:
+                raise ValueError(
+                    "Left padding can only be added to an empty BatchBlockKVCache"
+                )
+            self.left_padding += mx.array(left_padding)
+
+        if right_padding is not None and max(right_padding) > 0:
+            self._right_padding = mx.array(right_padding)
+
+    def finalize(self):
+        if self._right_padding is not None and self.keys is not None:
+            padding = self._right_padding
+            self.keys = dynamic_roll(self.keys, padding[:, None], axis=2)
+            self.values = dynamic_roll(self.values, padding[:, None], axis=2)
+            self.left_padding += padding
+        self._right_padding = None
+
+    @property
+    def state(self):
+        if self.keys is None:
+            empty = mx.zeros((len(self.left_padding), 0, 0, 0))
+            return empty, empty, self.offset, self.left_padding
+        k, v = self.keys, self.values
+        if self._idx < k.shape[2]:
+            k = k[..., : self._idx, :]
+            v = v[..., : self._idx, :]
+        return k, v, self.offset, self.left_padding
+
+    @state.setter
+    def state(self, v):
+        self.keys, self.values, self.offset, self.left_padding = v
+        if self.keys.size == 0:
+            self.keys = None
+            self.values = None
+            self._idx = 0
+        else:
+            self._idx = self.keys.shape[2]
+        self._right_padding = None
+
+    def is_trimmable(self):
+        return self.empty()
+
+    def trim(self, n):
+        if not self.empty():
+            raise ValueError("Cannot trim a non-empty BatchBlockKVCache.")
+        return n
+
+    def extract(self, idx):
+        cache = BlockKVCache()
+        if self.keys is None:
+            return cache
+        padding = self.left_padding[idx].item()
+        length = self.offset[idx].item()
+        end = padding + length
+        cache.keys = mx.contiguous(self.keys[idx : idx + 1, :, padding:end, :])
+        cache.values = mx.contiguous(self.values[idx : idx + 1, :, padding:end, :])
+        cache.offset = cache.keys.shape[2]
+        return cache
+
+    @classmethod
+    def merge(cls, caches):
+        lengths = [c.size() for c in caches]
+        max_length = max(lengths)
+
+        if max_length == 0:
+            return cls([0] * len(caches))
+
+        padding = [max_length - l for l in lengths]
+        B = len(caches)
+        H = max(c.keys.shape[1] for c in caches if c.keys is not None)
+        Dk = max(c.keys.shape[3] for c in caches if c.keys is not None)
+        Dv = max(c.values.shape[3] for c in caches if c.values is not None)
+        dt = next(iter(c.keys.dtype for c in caches if c.keys is not None))
+
+        keys = mx.zeros((B, H, max_length, Dk), dtype=dt)
+        values = mx.zeros((B, H, max_length, Dv), dtype=dt)
+        for i, (p, l, c) in enumerate(zip(padding, lengths, caches)):
+            if c.keys is None:
+                continue
+            keys[i : i + 1, :, p : p + l] = c.keys[..., : c.offset, :]
+            values[i : i + 1, :, p : p + l] = c.values[..., : c.offset, :]
+
+        cache = cls(padding)
+        cache.keys = keys
+        cache.values = values
+        cache.offset = mx.array(lengths)
+        cache._idx = keys.shape[2]
+
+        return cache
 
 
 class BatchRotatingKVCache(_BaseCache):

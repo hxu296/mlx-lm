@@ -29,8 +29,10 @@ from transformers import PreTrainedTokenizer
 from .models import cache
 from .models.cache import (
     ArraysCache,
+    BatchBlockKVCache,
     BatchKVCache,
     BatchRotatingKVCache,
+    BlockKVCache,
     CacheList,
     KVCache,
     QuantizedKVCache,
@@ -218,6 +220,41 @@ def setup_arg_parser():
         help="Number of tokens to draft when using speculative decoding.",
         default=3,
     )
+    parser.add_argument(
+        "--use-block-cache",
+        action="store_true",
+        help="Enable model-specific block cache when supported.",
+    )
+    parser.add_argument(
+        "--block-size",
+        type=int,
+        default=32,
+        help="Block size for models with custom generation.",
+    )
+    parser.add_argument(
+        "--small-block-size",
+        type=int,
+        default=8,
+        help="Sub-block size for models with custom generation.",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=1.0,
+        help="Confidence threshold for models with custom generation.",
+    )
+    parser.add_argument(
+        "--mask-id",
+        type=int,
+        default=None,
+        help="Optional mask token id override for models with custom generation.",
+    )
+    parser.add_argument(
+        "--min-unmasks-per-step",
+        type=int,
+        default=1,
+        help="Minimum masked tokens to accept per refinement step for custom generation.",
+    )
     return parser
 
 
@@ -318,6 +355,13 @@ def generate_step(
     quantized_kv_start: int = 0,
     prompt_progress_callback: Optional[Callable[[int, int], None]] = None,
     input_embeddings: Optional[mx.array] = None,
+    eos_token_ids: Optional[Sequence[int]] = None,
+    use_block_cache: bool = False,
+    block_size: int = 32,
+    small_block_size: int = 8,
+    threshold: float = 1.0,
+    mask_id: Optional[int] = None,
+    min_unmasks_per_step: int = 1,
 ) -> Generator[Tuple[mx.array, mx.array], None, None]:
     """
     A generator producing token ids based on the given prompt from the model.
@@ -363,6 +407,29 @@ def generate_step(
         raise ValueError(
             "Either input_embeddings or prompt (or both) must be provided."
         )
+
+    if (
+        hasattr(model, "custom_generate_step")
+        and input_embeddings is None
+        and prompt_cache is None
+        and not logits_processors
+        and max_kv_size is None
+        and kv_bits is None
+    ):
+        yield from model.custom_generate_step(
+            prompt,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            prompt_progress_callback=prompt_progress_callback,
+            eos_token_ids=eos_token_ids,
+            use_block_cache=use_block_cache,
+            block_size=block_size,
+            small_block_size=small_block_size,
+            threshold=threshold,
+            mask_id=mask_id,
+            min_unmasks_per_step=min_unmasks_per_step,
+        )
+        return
 
     tokens = None
 
@@ -692,6 +759,7 @@ def stream_generate(
 
     if draft_model is None:
         kwargs.pop("num_draft_tokens", None)
+        kwargs["eos_token_ids"] = tokenizer.eos_token_ids
         token_generator = generate_step(prompt, model, **kwargs)
         # from_draft always false for non-speculative generation
         token_generator = (
@@ -836,6 +904,8 @@ def _make_cache(model, left_padding, max_kv_size):
     def to_batch_cache(c):
         if type(c) is KVCache:
             return BatchKVCache(left_padding)
+        elif type(c) is BlockKVCache:
+            return BatchBlockKVCache(left_padding)
         elif isinstance(c, ArraysCache):
             c.left_padding = mx.array(left_padding)
             return c
@@ -2070,6 +2140,12 @@ def main():
         quantized_kv_start=args.quantized_kv_start,
         draft_model=draft_model,
         num_draft_tokens=args.num_draft_tokens,
+        use_block_cache=args.use_block_cache,
+        block_size=args.block_size,
+        small_block_size=args.small_block_size,
+        threshold=args.threshold,
+        mask_id=args.mask_id,
+        min_unmasks_per_step=args.min_unmasks_per_step,
     )
     if not args.verbose:
         print(response)
