@@ -4,13 +4,13 @@ import argparse
 
 import mlx.core as mx
 
-from .generate import (
+from .generate import stream_generate
+from .models.cache import make_prompt_cache
+from .models.fast_dllm_qwen import (
     DEFAULT_BLOCK_SIZE,
     DEFAULT_SMALL_BLOCK_SIZE,
     DEFAULT_THRESHOLD,
-    stream_generate,
 )
-from .models.cache import make_prompt_cache
 from .sample_utils import make_sampler
 from .utils import load, sharded_load
 

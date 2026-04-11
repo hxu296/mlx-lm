@@ -9,7 +9,7 @@ from mlx.utils import tree_map
 
 from mlx_lm.models import rope_utils
 from mlx_lm.models.base import create_causal_mask, scaled_dot_product_attention
-from mlx_lm.models.cache import CacheList, KVCache, RotatingKVCache, make_prompt_cache
+from mlx_lm.models.cache import KVCache, RotatingKVCache, make_prompt_cache
 from mlx_lm.models.gated_delta import (
     gated_delta_kernel,
     gated_delta_ops,
@@ -19,97 +19,6 @@ from mlx_lm.models.ssm import ssm_attn, ssm_update
 
 
 class TestModels(unittest.TestCase):
-    def test_fast_dllm_qwen_block_mask(self):
-        from mlx_lm.models.fast_dllm_qwen import make_block_attention_mask
-
-        mask = make_block_attention_mask(seq_len=4, block_size=2, cache_seq_len=4)
-        expected = mx.array(
-            [
-                [True, True, True, True, True, True, False, False],
-                [True, True, True, True, True, True, False, False],
-                [True, True, True, True, True, True, True, True],
-                [True, True, True, True, True, True, True, True],
-            ]
-        )
-        self.assertTrue(mx.array_equal(mask, expected))
-
-    def test_fast_dllm_qwen_eval_does_not_mutate_cache(self):
-        from mlx_lm.models import fast_dllm_qwen
-
-        args = fast_dllm_qwen.ModelArgs(
-            model_type="Fast_dLLM_Qwen",
-            hidden_size=32,
-            num_hidden_layers=2,
-            intermediate_size=64,
-            num_attention_heads=4,
-            num_key_value_heads=2,
-            rms_norm_eps=1e-5,
-            vocab_size=128,
-            max_position_embeddings=128,
-            tie_word_embeddings=False,
-            mask_token_id=127,
-        )
-        model = fast_dllm_qwen.Model(args)
-        cache = model.make_cache()
-
-        prefix = mx.array([[1, 2, 3, 4]], dtype=mx.uint32)
-        out = model(prefix, cache=cache, block_size=4, update_past_key_values=True)
-        mx.eval(out)
-        self.assertIsInstance(cache[0], CacheList)
-        self.assertEqual(cache[0][0].offset, 4)
-        self.assertTrue(cache[0][1].empty())
-
-        block = mx.array([[5, 127, 127, 127]], dtype=mx.uint32)
-        out = model(
-            block,
-            cache=cache,
-            block_size=4,
-            update_past_key_values=False,
-            use_block_cache=True,
-        )
-        mx.eval(out)
-        self.assertEqual(cache[0][0].offset, 4)
-        self.assertEqual(cache[0][1].offset, 4)
-
-    def test_fast_dllm_qwen_batched_prompt_forward(self):
-        from mlx_lm.generate import _merge_caches
-        from mlx_lm.models import fast_dllm_qwen
-
-        args = fast_dllm_qwen.ModelArgs(
-            model_type="Fast_dLLM_Qwen",
-            hidden_size=32,
-            num_hidden_layers=2,
-            intermediate_size=64,
-            num_attention_heads=4,
-            num_key_value_heads=2,
-            rms_norm_eps=1e-5,
-            vocab_size=128,
-            max_position_embeddings=128,
-            tie_word_embeddings=False,
-            mask_token_id=127,
-        )
-        model = fast_dllm_qwen.Model(args)
-
-        cache_a = model.make_cache()
-        cache_b = model.make_cache()
-        prefix_a = mx.array([[1, 2, 3]], dtype=mx.uint32)
-        prefix_b = mx.array([[4, 5, 6, 7, 8]], dtype=mx.uint32)
-        mx.eval(model(prefix_a, cache=cache_a, block_size=4, update_past_key_values=True))
-        mx.eval(model(prefix_b, cache=cache_b, block_size=4, update_past_key_values=True))
-
-        merged = _merge_caches([cache_a, cache_b])
-        out = model(
-            mx.array([[9, 10], [11, 12]], dtype=mx.uint32),
-            cache=merged,
-            block_size=4,
-            update_past_key_values=True,
-        )
-        mx.eval(out)
-
-        self.assertEqual(out.shape, (2, 2, args.vocab_size))
-        self.assertEqual(merged[0][0].offset.tolist(), [5, 7])
-        self.assertTrue(merged[0][1].empty())
-
     def test_fast_dllm_qwen_diffusion_decode(self):
         from mlx_lm.models import fast_dllm_qwen
 

@@ -12,6 +12,11 @@ from .base import BaseModelArgs, scaled_dot_product_attention
 from .cache import BlockKVCache, CacheList, KVCache
 from .rope_utils import initialize_rope
 
+DEFAULT_BLOCK_SIZE = 32
+DEFAULT_SMALL_BLOCK_SIZE = 16
+DEFAULT_THRESHOLD = 0.7
+DEFAULT_MIN_UNMASKS_PER_STEP = 1
+
 
 def make_block_attention_mask(
     seq_len: int,

@@ -55,10 +55,6 @@ DEFAULT_MIN_TOKENS_TO_KEEP = 1
 DEFAULT_SEED = None
 DEFAULT_MODEL = "mlx-community/Llama-3.2-3B-Instruct-4bit"
 DEFAULT_QUANTIZED_KV_START = 5000
-DEFAULT_BLOCK_SIZE = 32
-DEFAULT_SMALL_BLOCK_SIZE = 16
-DEFAULT_THRESHOLD = 0.7
-DEFAULT_MIN_UNMASKS_PER_STEP = 1
 
 
 def str2bool(string):
@@ -232,20 +228,20 @@ def setup_arg_parser():
     parser.add_argument(
         "--block-size",
         type=int,
-        default=DEFAULT_BLOCK_SIZE,
-        help="Block size for models with custom generation.",
+        default=32,
+        help="Block size for models with diffusion decoding.",
     )
     parser.add_argument(
         "--small-block-size",
         type=int,
-        default=DEFAULT_SMALL_BLOCK_SIZE,
-        help="Sub-block size for models with custom generation.",
+        default=16,
+        help="Sub-block size for models with diffusion decoding.",
     )
     parser.add_argument(
         "--threshold",
         type=float,
-        default=DEFAULT_THRESHOLD,
-        help="Confidence threshold for models with custom generation.",
+        default=0.7,
+        help="Confidence threshold for models with diffusion decoding.",
     )
     parser.add_argument(
         "--mask-id",
@@ -360,12 +356,7 @@ def generate_step(
     prompt_progress_callback: Optional[Callable[[int, int], None]] = None,
     input_embeddings: Optional[mx.array] = None,
     eos_token_ids: Optional[Sequence[int]] = None,
-    use_block_cache: bool = False,
-    block_size: int = DEFAULT_BLOCK_SIZE,
-    small_block_size: int = DEFAULT_SMALL_BLOCK_SIZE,
-    threshold: float = DEFAULT_THRESHOLD,
-    mask_id: Optional[int] = None,
-    min_unmasks_per_step: int = 1,
+    **kwargs,
 ) -> Generator[Tuple[mx.array, mx.array], None, None]:
     """
     A generator producing token ids based on the given prompt from the model.
@@ -425,13 +416,8 @@ def generate_step(
             sampler=sampler,
             prompt_progress_callback=prompt_progress_callback,
             eos_token_ids=eos_token_ids,
-            use_block_cache=use_block_cache,
-            block_size=block_size,
-            small_block_size=small_block_size,
-            threshold=threshold,
-            mask_id=mask_id,
-            min_unmasks_per_step=min_unmasks_per_step,
             prompt_cache=prompt_cache,
+            **kwargs,
         )
         return
 

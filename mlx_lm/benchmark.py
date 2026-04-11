@@ -6,10 +6,10 @@ import time
 import mlx.core as mx
 
 from mlx_lm import batch_generate, load, stream_generate
-from mlx_lm.generate import (
+from mlx_lm.generate import DEFAULT_MODEL
+from mlx_lm.models.fast_dllm_qwen import (
     DEFAULT_BLOCK_SIZE,
     DEFAULT_MIN_UNMASKS_PER_STEP,
-    DEFAULT_MODEL,
     DEFAULT_SMALL_BLOCK_SIZE,
     DEFAULT_THRESHOLD,
 )
