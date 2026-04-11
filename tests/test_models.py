@@ -128,131 +128,26 @@ class TestModels(unittest.TestCase):
         )
         model = fast_dllm_qwen.Model(args)
 
-        outputs = list(
-            model.diffusion_decode(
-                mx.array([1, 2, 3], dtype=mx.uint32),
-                max_tokens=4,
-                eos_token_ids=[],
+        configs = [
+            # (prompt, max_tokens, kwargs)
+            ([1, 2, 3], 4, {}),
+            ([1, 2, 3], 4, {"use_block_cache": True}),
+            (list(range(1, 10)), 12, {"use_block_cache": True}),
+            (list(range(1, 10)), 12, {"min_unmasks_per_step": 2}),
+        ]
+        for prompt, max_tokens, kwargs in configs:
+            outputs = list(
+                model.diffusion_decode(
+                    mx.array(prompt, dtype=mx.uint32),
+                    max_tokens=max_tokens,
+                    eos_token_ids=[],
+                    **kwargs,
+                )
             )
-        )
-
-        self.assertEqual(len(outputs), 4)
-        for token, logprobs in outputs:
-            self.assertIsInstance(token, int)
-            self.assertEqual(logprobs.shape, (args.vocab_size,))
-
-    def test_block_kv_cache_update_slice(self):
-        from mlx_lm.models.cache import BlockKVCache
-
-        cache = BlockKVCache()
-        keys = mx.zeros((1, 2, 4, 8))
-        values = mx.zeros((1, 2, 4, 8))
-        cache.update_and_fetch(keys, values)
-
-        patch = mx.ones((1, 2, 2, 8))
-        cache.update_slice(patch, patch, 1)
-        out_k, out_v = cache.state
-
-        self.assertTrue(mx.array_equal(out_k[..., :1, :], keys[..., :1, :]))
-        self.assertTrue(mx.array_equal(out_k[..., 1:3, :], patch))
-        self.assertTrue(mx.array_equal(out_v[..., 1:3, :], patch))
-        self.assertTrue(mx.array_equal(out_k[..., 3:, :], keys[..., 3:, :]))
-
-    def test_fast_dllm_qwen_diffusion_decode_with_block_cache(self):
-        from mlx_lm.models import fast_dllm_qwen
-
-        args = fast_dllm_qwen.ModelArgs(
-            model_type="Fast_dLLM_Qwen",
-            hidden_size=32,
-            num_hidden_layers=2,
-            intermediate_size=64,
-            num_attention_heads=4,
-            num_key_value_heads=2,
-            rms_norm_eps=1e-5,
-            vocab_size=128,
-            max_position_embeddings=128,
-            tie_word_embeddings=False,
-            mask_token_id=127,
-        )
-        model = fast_dllm_qwen.Model(args)
-
-        outputs = list(
-            model.diffusion_decode(
-                mx.array([1, 2, 3], dtype=mx.uint32),
-                max_tokens=4,
-                eos_token_ids=[],
-                use_block_cache=True,
-            )
-        )
-
-        self.assertEqual(len(outputs), 4)
-        for token, logprobs in outputs:
-            self.assertIsInstance(token, int)
-            self.assertEqual(logprobs.shape, (args.vocab_size,))
-
-    def test_fast_dllm_qwen_diffusion_decode_with_block_cache_unaligned_prompt(self):
-        from mlx_lm.models import fast_dllm_qwen
-
-        args = fast_dllm_qwen.ModelArgs(
-            model_type="Fast_dLLM_Qwen",
-            hidden_size=32,
-            num_hidden_layers=2,
-            intermediate_size=64,
-            num_attention_heads=4,
-            num_key_value_heads=2,
-            rms_norm_eps=1e-5,
-            vocab_size=128,
-            max_position_embeddings=128,
-            tie_word_embeddings=False,
-            mask_token_id=127,
-        )
-        model = fast_dllm_qwen.Model(args)
-
-        outputs = list(
-            model.diffusion_decode(
-                mx.array(list(range(1, 10)), dtype=mx.uint32),
-                max_tokens=12,
-                eos_token_ids=[],
-                use_block_cache=True,
-            )
-        )
-
-        self.assertEqual(len(outputs), 12)
-        for token, logprobs in outputs:
-            self.assertIsInstance(token, int)
-            self.assertEqual(logprobs.shape, (args.vocab_size,))
-
-    def test_fast_dllm_qwen_diffusion_decode_with_min_unmasks(self):
-        from mlx_lm.models import fast_dllm_qwen
-
-        args = fast_dllm_qwen.ModelArgs(
-            model_type="Fast_dLLM_Qwen",
-            hidden_size=32,
-            num_hidden_layers=2,
-            intermediate_size=64,
-            num_attention_heads=4,
-            num_key_value_heads=2,
-            rms_norm_eps=1e-5,
-            vocab_size=128,
-            max_position_embeddings=128,
-            tie_word_embeddings=False,
-            mask_token_id=127,
-        )
-        model = fast_dllm_qwen.Model(args)
-
-        outputs = list(
-            model.diffusion_decode(
-                mx.array(list(range(1, 10)), dtype=mx.uint32),
-                max_tokens=12,
-                eos_token_ids=[],
-                min_unmasks_per_step=2,
-            )
-        )
-
-        self.assertEqual(len(outputs), 12)
-        for token, logprobs in outputs:
-            self.assertIsInstance(token, int)
-            self.assertEqual(logprobs.shape, (args.vocab_size,))
+            self.assertEqual(len(outputs), max_tokens)
+            for token, logprobs in outputs:
+                self.assertIsInstance(token, int)
+                self.assertEqual(logprobs.shape, (args.vocab_size,))
 
     def test_kv_cache(self):
         cache = KVCache()

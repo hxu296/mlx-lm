@@ -196,28 +196,12 @@ def main():
         default=512,
         help="Sequence length for the calibration data.",
     )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=8,
-        help="Calibration batch size for Hessian estimation.",
-    )
-    parser.add_argument(
-        "--trust-remote-code",
-        action="store_true",
-        help="Trust remote code when loading the tokenizer/model metadata.",
-    )
     parser.add_argument("--seed", type=int, default=123)
     args = parser.parse_args()
 
     mx.random.seed(args.seed)
 
-    model, tokenizer, config = load(
-        args.model,
-        lazy=True,
-        return_config=True,
-        tokenizer_config={"trust_remote_code": True if args.trust_remote_code else None},
-    )
+    model, tokenizer, config = load(args.model, lazy=True, return_config=True)
     calibration_data = load_data(tokenizer, args.num_samples, args.sequence_length)
 
     model, config["quantization"] = gptq_quantize(
@@ -227,7 +211,6 @@ def main():
         args.group_size,
         args.fallback_bits,
         args.fallback_group_size,
-        batch_size=args.batch_size,
     )
 
     bpw = compute_bits_per_weight(model)
