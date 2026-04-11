@@ -110,7 +110,7 @@ class TestModels(unittest.TestCase):
         self.assertEqual(merged[0][0].offset.tolist(), [5, 7])
         self.assertTrue(merged[0][1].empty())
 
-    def test_fast_dllm_qwen_custom_generate_step(self):
+    def test_fast_dllm_qwen_diffusion_decode(self):
         from mlx_lm.models import fast_dllm_qwen
 
         args = fast_dllm_qwen.ModelArgs(
@@ -129,7 +129,7 @@ class TestModels(unittest.TestCase):
         model = fast_dllm_qwen.Model(args)
 
         outputs = list(
-            model.custom_generate_step(
+            model.diffusion_decode(
                 mx.array([1, 2, 3], dtype=mx.uint32),
                 max_tokens=4,
                 eos_token_ids=[],
@@ -158,7 +158,7 @@ class TestModels(unittest.TestCase):
         self.assertTrue(mx.array_equal(out_v[..., 1:3, :], patch))
         self.assertTrue(mx.array_equal(out_k[..., 3:, :], keys[..., 3:, :]))
 
-    def test_fast_dllm_qwen_custom_generate_step_with_block_cache(self):
+    def test_fast_dllm_qwen_diffusion_decode_with_block_cache(self):
         from mlx_lm.models import fast_dllm_qwen
 
         args = fast_dllm_qwen.ModelArgs(
@@ -177,7 +177,7 @@ class TestModels(unittest.TestCase):
         model = fast_dllm_qwen.Model(args)
 
         outputs = list(
-            model.custom_generate_step(
+            model.diffusion_decode(
                 mx.array([1, 2, 3], dtype=mx.uint32),
                 max_tokens=4,
                 eos_token_ids=[],
@@ -190,7 +190,7 @@ class TestModels(unittest.TestCase):
             self.assertIsInstance(token, int)
             self.assertEqual(logprobs.shape, (args.vocab_size,))
 
-    def test_fast_dllm_qwen_custom_generate_step_with_block_cache_unaligned_prompt(self):
+    def test_fast_dllm_qwen_diffusion_decode_with_block_cache_unaligned_prompt(self):
         from mlx_lm.models import fast_dllm_qwen
 
         args = fast_dllm_qwen.ModelArgs(
@@ -209,7 +209,7 @@ class TestModels(unittest.TestCase):
         model = fast_dllm_qwen.Model(args)
 
         outputs = list(
-            model.custom_generate_step(
+            model.diffusion_decode(
                 mx.array(list(range(1, 10)), dtype=mx.uint32),
                 max_tokens=12,
                 eos_token_ids=[],
@@ -222,7 +222,7 @@ class TestModels(unittest.TestCase):
             self.assertIsInstance(token, int)
             self.assertEqual(logprobs.shape, (args.vocab_size,))
 
-    def test_fast_dllm_qwen_custom_generate_step_with_min_unmasks(self):
+    def test_fast_dllm_qwen_diffusion_decode_with_min_unmasks(self):
         from mlx_lm.models import fast_dllm_qwen
 
         args = fast_dllm_qwen.ModelArgs(
@@ -241,7 +241,7 @@ class TestModels(unittest.TestCase):
         model = fast_dllm_qwen.Model(args)
 
         outputs = list(
-            model.custom_generate_step(
+            model.diffusion_decode(
                 mx.array(list(range(1, 10)), dtype=mx.uint32),
                 max_tokens=12,
                 eos_token_ids=[],
