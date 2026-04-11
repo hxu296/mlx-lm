@@ -416,7 +416,6 @@ def generate_step(
             sampler=sampler,
             prompt_progress_callback=prompt_progress_callback,
             eos_token_ids=eos_token_ids,
-            prompt_cache=prompt_cache,
             **kwargs,
         )
         return

@@ -13,8 +13,8 @@ from .cache import BlockKVCache, CacheList, KVCache
 from .rope_utils import initialize_rope
 
 DEFAULT_BLOCK_SIZE = 32
-DEFAULT_SMALL_BLOCK_SIZE = 16
-DEFAULT_THRESHOLD = 0.7
+DEFAULT_SMALL_BLOCK_SIZE = 8
+DEFAULT_THRESHOLD = 0.9
 DEFAULT_MIN_UNMASKS_PER_STEP = 1
 
 
@@ -413,7 +413,6 @@ class Model(nn.Module):
         mask_id: Optional[int] = None,
         use_block_cache: bool = False,
         min_unmasks_per_step: int = 1,
-        prompt_cache: Optional[List[Optional[Any]]] = None,
         **kwargs,
     ) -> Generator[tuple[int, mx.array], None, None]:
         if max_tokens < 0:
@@ -446,12 +445,7 @@ class Model(nn.Module):
 
         input_ids = prompt[None]
         token_logprobs: Dict[int, mx.array] = {}
-        past_key_values = prompt_cache if prompt_cache is not None else self.make_cache()
-
-        # Skip tokens already in the cache from prior turns
-        cached_len = past_key_values[0].size()
-        if cached_len > 0:
-            input_ids = input_ids[:, cached_len:]
+        past_key_values = self.make_cache()
 
         if input_ids.shape[1] > block_size:
             full_prefix_len = (input_ids.shape[1] // block_size) * block_size
@@ -500,8 +494,10 @@ class Model(nn.Module):
 
                 mask_idx = x_t[:, -block_size:] == mask_id
                 if int(mask_idx.sum().item()) == 0:
+                    commit_block = x_t[:, -block_size:]
+                    mx.eval(commit_block)
                     logits = self(
-                        x_t[:, -block_size:],
+                        commit_block,
                         cache=past_key_values,
                         block_size=block_size,
                         update_past_key_values=True,
@@ -570,48 +566,73 @@ class Model(nn.Module):
                                 )
                                 logits = shift_diffusion_logits(logits)
                         else:
+                            input_block = x_t[:, -block_size:]
+                            mx.eval(input_block)
                             logits = self(
-                                x_t[:, -block_size:],
+                                input_block,
                                 cache=past_key_values,
                                 block_size=block_size,
                                 update_past_key_values=False,
                             )
                             logits = shift_diffusion_logits(logits)[:, start:end, :]
+
+                        # Evaluate intermediate results to keep the lazy graph
+                        # small. Without these evals, MLX accumulates a large
+                        # graph that is significantly slower to execute on some
+                        # builds. See: https://github.com/ml-explore/mlx/issues/XXXX
+                        mx.eval(logits)
                         sampled, probs, logprobs = self._sample_positions(
                             logits.reshape(-1, logits.shape[-1]), sampler
                         )
                         sampled = sampled.reshape(1, -1)
                         probs = probs.reshape(1, -1)
+                        mx.eval(sampled, probs)
 
                         sampled_probs = mx.where(segment_mask, probs, -mx.inf)
                         unmask_idx = sampled_probs > threshold
                         force_unmasks = min(
                             min_unmasks_per_step, n_masked
                         )
-                        # TODO: Remove this workaround once the upstream MLX
-                        # argsort bug is fixed. mx.argsort crashes when fused
-                        # into a large lazy computation graph on some MLX
-                        # builds. Materializing sampled_probs breaks the graph.
-                        mx.eval(sampled_probs)
-                        if force_unmasks == 1:
-                            top_idx = mx.argmax(sampled_probs, axis=-1)
-                            unmask_idx[0, top_idx.item()] = True
+                        if force_unmasks >= n_masked:
+                            # All masked positions will be unmasked — skip top-k.
+                            mx.eval(sampled)
+                            unmask_idx = segment_mask
                         else:
-                            top_indices = mx.argsort(-sampled_probs, axis=-1)[
-                                :, :force_unmasks
-                            ]
-                            for idx in top_indices[0].tolist():
-                                unmask_idx[0, idx] = True
-                        unmask_idx = mx.logical_and(unmask_idx, segment_mask)
+                            # Materialize sampled_probs to avoid fusing argsort/
+                            # argmax into a large lazy graph (crashes on some
+                            # MLX builds).
+                            mx.eval(sampled_probs)
+                            if force_unmasks == 1:
+                                top_idx = mx.argmax(sampled_probs, axis=-1)
+                                unmask_idx[0, top_idx.item()] = True
+                            else:
+                                sp_copy = mx.array(sampled_probs)
+                                for _ in range(force_unmasks):
+                                    idx = mx.argmax(sp_copy, axis=-1).item()
+                                    unmask_idx[0, idx] = True
+                                    sp_copy[0, idx] = -mx.inf
+                                    mx.eval(sp_copy)
+                            unmask_idx = mx.logical_and(unmask_idx, segment_mask)
 
                         segment = x_t[:, -block_size + start : -block_size + end]
                         if end == block_size:
                             segment = x_t[:, -block_size + start :]
                         new_segment = mx.where(unmask_idx, sampled, segment)
+                        mx.eval(new_segment)
                         if end == block_size:
-                            x_t[:, -block_size + start :] = new_segment
+                            x_t = mx.concatenate(
+                                [x_t[:, : -block_size + start], new_segment], axis=1
+                            )
                         else:
-                            x_t[:, -block_size + start : -block_size + end] = new_segment
+                            x_t = mx.concatenate(
+                                [
+                                    x_t[:, : -block_size + start],
+                                    new_segment,
+                                    x_t[:, -block_size + end :],
+                                ],
+                                axis=1,
+                            )
+                        mx.eval(x_t)
 
                         local_positions = [
                             i for i, flag in enumerate(unmask_idx[0].tolist()) if flag
