@@ -4,7 +4,12 @@ import argparse
 
 import mlx.core as mx
 
-from .generate import stream_generate
+from .generate import (
+    DEFAULT_BLOCK_SIZE,
+    DEFAULT_SMALL_BLOCK_SIZE,
+    DEFAULT_THRESHOLD,
+    stream_generate,
+)
 from .models.cache import make_prompt_cache
 from .sample_utils import make_sampler
 from .utils import load, sharded_load
@@ -92,19 +97,19 @@ def setup_arg_parser():
     parser.add_argument(
         "--block-size",
         type=int,
-        default=32,
+        default=DEFAULT_BLOCK_SIZE,
         help="Block size for models with custom generation.",
     )
     parser.add_argument(
         "--small-block-size",
         type=int,
-        default=8,
+        default=DEFAULT_SMALL_BLOCK_SIZE,
         help="Sub-block size for models with custom generation.",
     )
     parser.add_argument(
         "--threshold",
         type=float,
-        default=1.0,
+        default=DEFAULT_THRESHOLD,
         help="Confidence threshold for models with custom generation.",
     )
     parser.add_argument(
@@ -156,32 +161,32 @@ def main():
         rprint("- 'r' to reset the chat")
         rprint("- 'h' to display these commands")
 
+    def init_chat():
+        cache = make_prompt_cache(model, args.max_kv_size)
+        msgs = []
+        if args.system_prompt is not None:
+            msgs.append({"role": "system", "content": args.system_prompt})
+        return cache, msgs
+
     rprint(f"[INFO] Starting chat session with {args.model}.")
     print_help()
-    use_prompt_cache = not hasattr(model, "custom_generate_step")
-    prompt_cache = (
-        make_prompt_cache(model, args.max_kv_size) if use_prompt_cache else None
-    )
+    prompt_cache, messages = init_chat()
     while True:
         query = input(">> " if rank == 0 else "")
         if query == "q":
             break
         if query == "r":
-            prompt_cache = (
-                make_prompt_cache(model, args.max_kv_size) if use_prompt_cache else None
-            )
+            prompt_cache, messages = init_chat()
             continue
         if query == "h":
             print_help()
             continue
-        messages = []
-        if args.system_prompt is not None:
-            messages.append({"role": "system", "content": args.system_prompt})
         messages.append({"role": "user", "content": query})
         prompt = tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
         )
+        response_text = ""
         for response in stream_generate(
             model,
             tokenizer,
@@ -204,8 +209,10 @@ def main():
             mask_id=args.mask_id,
             min_unmasks_per_step=args.min_unmasks_per_step,
         ):
+            response_text += response.text
             rprint(response.text, flush=True, end="")
         rprint()
+        messages.append({"role": "assistant", "content": response_text})
 
 
 if __name__ == "__main__":

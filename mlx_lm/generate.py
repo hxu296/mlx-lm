@@ -55,6 +55,10 @@ DEFAULT_MIN_TOKENS_TO_KEEP = 1
 DEFAULT_SEED = None
 DEFAULT_MODEL = "mlx-community/Llama-3.2-3B-Instruct-4bit"
 DEFAULT_QUANTIZED_KV_START = 5000
+DEFAULT_BLOCK_SIZE = 32
+DEFAULT_SMALL_BLOCK_SIZE = 16
+DEFAULT_THRESHOLD = 0.7
+DEFAULT_MIN_UNMASKS_PER_STEP = 1
 
 
 def str2bool(string):
@@ -228,19 +232,19 @@ def setup_arg_parser():
     parser.add_argument(
         "--block-size",
         type=int,
-        default=32,
+        default=DEFAULT_BLOCK_SIZE,
         help="Block size for models with custom generation.",
     )
     parser.add_argument(
         "--small-block-size",
         type=int,
-        default=8,
+        default=DEFAULT_SMALL_BLOCK_SIZE,
         help="Sub-block size for models with custom generation.",
     )
     parser.add_argument(
         "--threshold",
         type=float,
-        default=1.0,
+        default=DEFAULT_THRESHOLD,
         help="Confidence threshold for models with custom generation.",
     )
     parser.add_argument(
@@ -357,9 +361,9 @@ def generate_step(
     input_embeddings: Optional[mx.array] = None,
     eos_token_ids: Optional[Sequence[int]] = None,
     use_block_cache: bool = False,
-    block_size: int = 32,
-    small_block_size: int = 8,
-    threshold: float = 1.0,
+    block_size: int = DEFAULT_BLOCK_SIZE,
+    small_block_size: int = DEFAULT_SMALL_BLOCK_SIZE,
+    threshold: float = DEFAULT_THRESHOLD,
     mask_id: Optional[int] = None,
     min_unmasks_per_step: int = 1,
 ) -> Generator[Tuple[mx.array, mx.array], None, None]:
@@ -409,14 +413,13 @@ def generate_step(
         )
 
     if (
-        hasattr(model, "custom_generate_step")
+        hasattr(model, "diffusion_decode")
         and input_embeddings is None
-        and prompt_cache is None
         and not logits_processors
         and max_kv_size is None
         and kv_bits is None
     ):
-        yield from model.custom_generate_step(
+        yield from model.diffusion_decode(
             prompt,
             max_tokens=max_tokens,
             sampler=sampler,
@@ -428,6 +431,7 @@ def generate_step(
             threshold=threshold,
             mask_id=mask_id,
             min_unmasks_per_step=min_unmasks_per_step,
+            prompt_cache=prompt_cache,
         )
         return
 

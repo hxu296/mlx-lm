@@ -394,7 +394,7 @@ class Model(nn.Module):
         probs = mx.exp(mx.take_along_axis(logprobs, tokens[:, None], axis=-1).squeeze(-1))
         return tokens, probs, logprobs
 
-    def custom_generate_step(
+    def diffusion_decode(
         self,
         prompt: mx.array,
         *,
@@ -408,6 +408,7 @@ class Model(nn.Module):
         mask_id: Optional[int] = None,
         use_block_cache: bool = False,
         min_unmasks_per_step: int = 1,
+        prompt_cache: Optional[List[Optional[Any]]] = None,
         **kwargs,
     ) -> Generator[tuple[int, mx.array], None, None]:
         if max_tokens < 0:
@@ -440,7 +441,12 @@ class Model(nn.Module):
 
         input_ids = prompt[None]
         token_logprobs: Dict[int, mx.array] = {}
-        past_key_values = self.make_cache()
+        past_key_values = prompt_cache if prompt_cache is not None else self.make_cache()
+
+        # Skip tokens already in the cache from prior turns
+        cached_len = past_key_values[0].size()
+        if cached_len > 0:
+            input_ids = input_ids[:, cached_len:]
 
         if input_ids.shape[1] > block_size:
             full_prefix_len = (input_ids.shape[1] // block_size) * block_size
@@ -513,7 +519,8 @@ class Model(nn.Module):
                     while True:
                         block_mask_idx = x_t[:, -block_size:] == mask_id
                         segment_mask = block_mask_idx[:, start:end]
-                        if int(segment_mask.sum().item()) == 0:
+                        n_masked = int(segment_mask.sum().item())
+                        if n_masked == 0:
                             break
 
                         stop_offset = first_stop_offset(
@@ -574,13 +581,22 @@ class Model(nn.Module):
                         sampled_probs = mx.where(segment_mask, probs, -mx.inf)
                         unmask_idx = sampled_probs > threshold
                         force_unmasks = min(
-                            min_unmasks_per_step, int(segment_mask.sum().item())
+                            min_unmasks_per_step, n_masked
                         )
-                        top_indices = mx.argsort(-sampled_probs, axis=-1)[
-                            :, :force_unmasks
-                        ]
-                        for idx in top_indices[0].tolist():
-                            unmask_idx[0, idx] = True
+                        # TODO: Remove this workaround once the upstream MLX
+                        # argsort bug is fixed. mx.argsort crashes when fused
+                        # into a large lazy computation graph on some MLX
+                        # builds. Materializing sampled_probs breaks the graph.
+                        mx.eval(sampled_probs)
+                        if force_unmasks == 1:
+                            top_idx = mx.argmax(sampled_probs, axis=-1)
+                            unmask_idx[0, top_idx.item()] = True
+                        else:
+                            top_indices = mx.argsort(-sampled_probs, axis=-1)[
+                                :, :force_unmasks
+                            ]
+                            for idx in top_indices[0].tolist():
+                                unmask_idx[0, idx] = True
                         unmask_idx = mx.logical_and(unmask_idx, segment_mask)
 
                         segment = x_t[:, -block_size + start : -block_size + end]

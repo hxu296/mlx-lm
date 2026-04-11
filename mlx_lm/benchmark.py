@@ -6,7 +6,13 @@ import time
 import mlx.core as mx
 
 from mlx_lm import batch_generate, load, stream_generate
-from mlx_lm.generate import DEFAULT_MODEL
+from mlx_lm.generate import (
+    DEFAULT_BLOCK_SIZE,
+    DEFAULT_MIN_UNMASKS_PER_STEP,
+    DEFAULT_MODEL,
+    DEFAULT_SMALL_BLOCK_SIZE,
+    DEFAULT_THRESHOLD,
+)
 from mlx_lm.utils import pipeline_load, sharded_load
 
 
@@ -87,19 +93,19 @@ def setup_arg_parser():
     parser.add_argument(
         "--block-size",
         type=int,
-        default=32,
+        default=DEFAULT_BLOCK_SIZE,
         help="Block size for models with custom generation.",
     )
     parser.add_argument(
         "--small-block-size",
         type=int,
-        default=8,
+        default=DEFAULT_SMALL_BLOCK_SIZE,
         help="Sub-block size for models with custom generation.",
     )
     parser.add_argument(
         "--threshold",
         type=float,
-        default=1.0,
+        default=DEFAULT_THRESHOLD,
         help="Confidence threshold for models with custom generation.",
     )
     parser.add_argument(
@@ -174,11 +180,11 @@ def main():
 
     if batch_size > 1 and (
         args.use_block_cache
-        or args.block_size != 32
-        or args.small_block_size != 8
-        or args.threshold != 1.0
+        or args.block_size != DEFAULT_BLOCK_SIZE
+        or args.small_block_size != DEFAULT_SMALL_BLOCK_SIZE
+        or args.threshold != DEFAULT_THRESHOLD
         or args.mask_id is not None
-        or args.min_unmasks_per_step != 1
+        or args.min_unmasks_per_step != DEFAULT_MIN_UNMASKS_PER_STEP
     ):
         raise ValueError(
             "Fast-dLLM generation options are only supported with batch_size=1."
@@ -216,7 +222,7 @@ def main():
         _bench = batch_bench
 
     use_custom_generation_timing = batch_size == 1 and hasattr(
-        model, "custom_generate_step"
+        model, "diffusion_decode"
     )
 
     def measure_custom_prompt_time():
